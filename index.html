@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AR_HW3_Q2_Francis_Fan - Q2</title>
+    <!-- Babylon.js core and glTF loader -->
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+    <style>
+        html, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+        #renderCanvas {
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="renderCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById("renderCanvas");
+        const engine = new BABYLON.Engine(canvas, true);
+
+        const createScene = async function () {
+            const scene = new BABYLON.Scene(engine);
+
+            // Desktop fallback camera
+            const camera = new BABYLON.FreeCamera("camera1", new BABYLON.Vector3(0, 1.5, -2), scene);
+            camera.setTarget(BABYLON.Vector3.Zero());
+
+            // Lighting
+            const light = new BABYLON.HemisphericLight("hemiLight", new BABYLON.Vector3(0, 1, 0), scene);
+            light.intensity = 1.0;
+
+            // Reticle indicator for surface hit test
+            const reticle = BABYLON.MeshBuilder.CreateDisc("reticle", { radius: 0.08 }, scene);
+            reticle.rotation.x = Math.PI / 2;
+            reticle.isVisible = false;
+
+            // WebXR Setup
+            const xr = await scene.createDefaultXRExperienceAsync({
+                uiOptions: { sessionMode: "immersive-ar" },
+                optionalFeatures: true
+            });
+
+            // Enable Hit-Testing
+            const featuresManager = xr.baseExperience.featuresManager;
+            const hitTest = featuresManager.enableFeature(BABYLON.WebXRHitTest, "latest");
+
+            let currentHitResult = null;
+            hitTest.onHitTestResultObservable.add((results) => {
+                if (results.length > 0) {
+                    currentHitResult = results[0];
+                    reticle.isVisible = true;
+                    currentHitResult.transformationMatrix.decompose(
+                        reticle.scaling,
+                        reticle.rotationQuaternion,
+                        reticle.position
+                    );
+                } else {
+                    reticle.isVisible = false;
+                    currentHitResult = null;
+                }
+            });
+
+            // Target pointer for the most recently spawned model
+            let activeModel = null;
+
+            // spawn 3D model
+            const spawnSneaker = async (position, rotation) => {
+                try {
+                    const result = await BABYLON.SceneLoader.ImportMeshAsync(
+                        "", 
+                        "./sneaker_fih/", 
+                        "scene.gltf", 
+                        scene
+                    );
+
+                    // Root node of the imported model
+                    const rootNode = result.meshes[0];
+
+                    // Set spawn position and orientation from hit test
+                    rootNode.position.copyFrom(position);
+                    if (rotation) {
+                        rootNode.rotationQuaternion = rotation.clone();
+                    } else if (!rootNode.rotationQuaternion) {
+                        rootNode.rotationQuaternion = BABYLON.Quaternion.Identity();
+                    }
+
+                    // initial scale adjustment
+                    rootNode.scaling.setAll(0.5);
+
+                    // Store original transform for reset
+                    rootNode.metadata = {
+                        initialPosition: rootNode.position.clone(),
+                        initialRotation: rootNode.rotationQuaternion.clone(),
+                        initialScaling: rootNode.scaling.clone()
+                    };
+
+                    // Update pointer to current active model
+                    activeModel = rootNode;
+                } catch (err) {
+                    console.error("Failed to load glTF model:", err);
+                }
+            };
+
+            // Controller Bindings
+            xr.input.onControllerAddedObservable.add((controller) => {
+                controller.onMotionControllerInitObservable.add((motionController) => {
+                    const handedness = motionController.handedness;
+
+                    // RIGHT
+                    if (handedness === "right") {
+                        // Q2.b: Trigger -> Spawn model at hit test
+                        const trigger = motionController.getComponent("xr-standard-trigger");
+                        if (trigger) {
+                            trigger.onButtonStateChangedObservable.add((component) => {
+                                if (component.changes.pressed && component.pressed) {
+                                    if (currentHitResult) {
+                                        spawnSneaker(reticle.position, reticle.rotationQuaternion);
+                                    }
+                                }
+                            });
+                        }
+
+                        // Right Thumbstick XZ plane
+                        const thumbstick = motionController.getComponent("xr-standard-thumbstick");
+                        if (thumbstick) {
+                            thumbstick.onAxisValueChangedObservable.add((axes) => {
+                                if (!activeModel) return;
+                                const speed = 0.015;
+                                activeModel.position.x += axes.x * speed;
+                                activeModel.position.z -= axes.y * speed;
+                            });
+                        }
+
+                        // A-button scale up
+                        const aButton = motionController.getComponent("a-button");
+                        if (aButton) {
+                            aButton.onButtonStateChangedObservable.add((component) => {
+                                if (component.pressed && activeModel) {
+                                    activeModel.scaling.scaleInPlace(1.02);
+                                }
+                            });
+                        }
+
+                        // B-button scale down
+                        const bButton = motionController.getComponent("b-button");
+                        if (bButton) {
+                            bButton.onButtonStateChangedObservable.add((component) => {
+                                if (component.pressed && activeModel) {
+                                    activeModel.scaling.scaleInPlace(0.98);
+                                }
+                            });
+                        }
+                    }
+
+                    // LEFT
+                    if (handedness === "left") {
+                        // Q2.d: Left Thumbstick -> Rotate model around Y-axis
+                        const thumbstick = motionController.getComponent("xr-standard-thumbstick");
+                        if (thumbstick) {
+                            thumbstick.onAxisValueChangedObservable.add((axes) => {
+                                if (!activeModel) return;
+                                const rotSpeed = 0.04;
+                                const deltaRot = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Y, axes.x * rotSpeed);
+                                activeModel.rotationQuaternion.multiplyInPlace(deltaRot);
+                            });
+                        }
+
+                        // X-button Reset
+                        const xButton = motionController.getComponent("x-button");
+                        if (xButton) {
+                            xButton.onButtonStateChangedObservable.add((component) => {
+                                if (component.changes.pressed && component.pressed) {
+                                    if (activeModel && activeModel.metadata) {
+                                        activeModel.position.copyFrom(activeModel.metadata.initialPosition);
+                                        activeModel.rotationQuaternion.copyFrom(activeModel.metadata.initialRotation);
+                                        activeModel.scaling.copyFrom(activeModel.metadata.initialScaling);
+                                    }
+                                }
+                            });
+                        }
+                    }
+                });
+            });
+
+            return scene;
+        };
+
+        createScene().then((scene) => {
+            engine.runRenderLoop(() => {
+                scene.render();
+            });
+        });
+
+        window.addEventListener("resize", () => {
+            engine.resize();
+        });
+    </script>
+</body>
+</html>
